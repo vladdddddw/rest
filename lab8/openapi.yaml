@@ -1,0 +1,572 @@
+openapi: 3.0.3
+
+info:
+  title: Book Catalog API
+  description: |
+    REST API for managing a book catalog.
+
+    **Features:**
+    - JWT authentication (access + refresh tokens with rotation)
+    - Any authenticated user can read and write
+    - Sliding-window rate limiting via Redis (3 req/min anon, 15 req/min auth)
+    - Limit-Offset pagination
+    - Filtering by status, author, minimum pages
+    - Sorting by title or year
+  version: "1.0.0"
+
+servers:
+  - url: http://localhost:4010
+    description: Prism Mock Server
+
+tags:
+  - name: auth
+    description: Registration, login, token management
+  - name: books
+    description: Book catalog CRUD
+
+security:
+  - BearerAuth: []
+
+paths:
+
+  /auth/register:
+    post:
+      tags: [auth]
+      summary: Register a new account
+      security: []
+      operationId: registerUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserRegister'
+            example:
+              username: alice
+              password: alice123
+      responses:
+        '201':
+          description: Account created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserOut'
+              example:
+                id: 550e8400-e29b-41d4-a716-446655440000
+                username: alice
+                is_active: true
+        '409':
+          description: Username already taken
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                detail: Username already taken
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Login and receive JWT tokens
+      description: |
+        Returns access token (45 min) and refresh token (14 days).
+        Rate limited: 3 requests/min for anonymous users.
+      security: []
+      operationId: loginUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              username: alice
+              password: alice123
+      responses:
+        '200':
+          description: Tokens issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+              example:
+                access_token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.access.mock
+                refresh_token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.refresh.mock
+                token_type: bearer
+        '401':
+          description: Wrong credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                detail: Wrong username or password
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /auth/refresh:
+    post:
+      tags: [auth]
+      summary: Refresh token pair (rotation)
+      description: Issues a new access + refresh pair; old refresh token is invalidated.
+      security: []
+      operationId: refreshToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+            example:
+              refresh_token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.refresh.mock
+      responses:
+        '200':
+          description: New token pair
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '401':
+          description: Token expired or invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                detail: Token is invalid or has expired
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: Logout — revoke refresh token
+      security: []
+      operationId: logoutUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+              example:
+                message: Logged out
+
+  /books/:
+    get:
+      tags: [books]
+      summary: List books (paginated)
+      description: |
+        Returns a paginated book list. No authentication required.
+        Rate limit: 3 req/min anonymous, 15 req/min authenticated.
+      security: []
+      operationId: listBooks
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Filter by availability
+          schema:
+            type: string
+            enum: [free, on_loan]
+          example: free
+        - name: author
+          in: query
+          required: false
+          description: Filter by author (partial, case-insensitive)
+          schema:
+            type: string
+          example: Shevchenko
+        - name: pages_min
+          in: query
+          required: false
+          description: Minimum number of pages
+          schema:
+            type: integer
+            minimum: 1
+          example: 100
+        - name: sort_by
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [title, year]
+          example: year
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 10
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Paginated book list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookListOut'
+              example:
+                items:
+                  - id: 550e8400-e29b-41d4-a716-446655440001
+                    title: Kobzar
+                    author: Taras Shevchenko
+                    year: 1840
+                    pages: 312
+                    summary: Poetry collection
+                    status: free
+                  - id: 550e8400-e29b-41d4-a716-446655440002
+                    title: Eneyida
+                    author: Ivan Kotlyarevsky
+                    year: 1798
+                    pages: 220
+                    summary: null
+                    status: on_loan
+                total: 2
+                limit: 10
+                offset: 0
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+    post:
+      tags: [books]
+      summary: Add a new book
+      description: Requires authentication. Any logged-in user can add books.
+      operationId: createBook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookIn'
+            examples:
+              poetry:
+                summary: Poetry book
+                value:
+                  title: Kobzar
+                  author: Taras Shevchenko
+                  year: 1840
+                  pages: 312
+                  summary: Classic Ukrainian poetry collection
+                  status: free
+              novel:
+                summary: Novel without pages
+                value:
+                  title: Lisova pisnia
+                  author: Lesia Ukrainka
+                  year: 1911
+                  status: on_loan
+      responses:
+        '201':
+          description: Book added
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Book'
+              example:
+                id: 550e8400-e29b-41d4-a716-446655440001
+                title: Kobzar
+                author: Taras Shevchenko
+                year: 1840
+                pages: 312
+                summary: Poetry collection
+                status: free
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /books/{book_id}:
+    get:
+      tags: [books]
+      summary: Get a single book by ID
+      security: []
+      operationId: getBook
+      parameters:
+        - $ref: '#/components/parameters/BookId'
+      responses:
+        '200':
+          description: Book found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Book'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+    delete:
+      tags: [books]
+      summary: Delete a book (idempotent)
+      description: Requires authentication. Returns 204 even if book did not exist.
+      operationId: deleteBook
+      parameters:
+        - $ref: '#/components/parameters/BookId'
+      responses:
+        '204':
+          description: Deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+components:
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    BookId:
+      name: book_id
+      in: path
+      required: true
+      description: Book UUID
+      schema:
+        type: string
+        format: uuid
+        example: 550e8400-e29b-41d4-a716-446655440001
+
+  schemas:
+
+    Book:
+      type: object
+      required: [id, title, author, year, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+          example: 550e8400-e29b-41d4-a716-446655440001
+        title:
+          type: string
+          example: Kobzar
+        author:
+          type: string
+          example: Taras Shevchenko
+        year:
+          type: integer
+          example: 1840
+        pages:
+          type: integer
+          nullable: true
+          example: 312
+        summary:
+          type: string
+          nullable: true
+          example: Classic poetry collection
+        status:
+          type: string
+          enum: [free, on_loan]
+          example: free
+
+    BookIn:
+      type: object
+      required: [title, author, year]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: Kobzar
+        author:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: Taras Shevchenko
+        year:
+          type: integer
+          minimum: 1000
+          maximum: 2100
+          example: 1840
+        pages:
+          type: integer
+          minimum: 1
+          maximum: 10000
+          nullable: true
+          example: 312
+        summary:
+          type: string
+          maxLength: 1000
+          nullable: true
+          example: Poetry collection
+        status:
+          type: string
+          enum: [free, on_loan]
+          default: free
+          example: free
+
+    BookListOut:
+      type: object
+      required: [items, total, limit, offset]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Book'
+        total:
+          type: integer
+          example: 42
+        limit:
+          type: integer
+          example: 10
+        offset:
+          type: integer
+          example: 0
+
+    UserRegister:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 100
+          example: alice
+        password:
+          type: string
+          minLength: 6
+          example: alice123
+
+    UserOut:
+      type: object
+      required: [id, username, is_active]
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: 550e8400-e29b-41d4-a716-446655440000
+        username:
+          type: string
+          example: alice
+        is_active:
+          type: boolean
+          example: true
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          example: alice
+        password:
+          type: string
+          example: alice123
+
+    TokenResponse:
+      type: object
+      required: [access_token, refresh_token, token_type]
+      properties:
+        access_token:
+          type: string
+          description: Valid for 45 minutes
+          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.access.mock
+        refresh_token:
+          type: string
+          description: Valid for 14 days
+          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.refresh.mock
+        token_type:
+          type: string
+          example: bearer
+
+    RefreshRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.refresh.mock
+
+    Error:
+      type: object
+      properties:
+        detail:
+          type: string
+          example: Not found
+
+    ValidationError:
+      type: object
+      properties:
+        detail:
+          type: array
+          items:
+            type: object
+            properties:
+              loc:
+                type: array
+                items:
+                  oneOf:
+                    - type: string
+                    - type: integer
+              msg:
+                type: string
+              type:
+                type: string
+
+  responses:
+
+    Unauthorized:
+      description: Missing or invalid token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            detail: Authorization required
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            detail: Not found
+
+    UnprocessableEntity:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ValidationError'
+
+    TooManyRequests:
+      description: Rate limit exceeded
+      headers:
+        Retry-After:
+          description: Seconds until the limit resets
+          schema:
+            type: integer
+            example: 60
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            detail: Rate limit exceeded. Try again in 47 seconds.

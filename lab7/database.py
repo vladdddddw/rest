@@ -1,4 +1,5 @@
 import os
+import ssl
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 
@@ -12,7 +13,9 @@ if not _raw_url.startswith("postgresql+asyncpg://"):
     _raw_url = _raw_url.replace("postgresql://", "postgresql+asyncpg://", 1)
 DATABASE_URL = _raw_url
 
-engine = create_async_engine(DATABASE_URL, echo=False)
+# Render's external Postgres requires SSL; local dev does not
+_connect_args = {"ssl": ssl.create_default_context()} if os.getenv("RENDER") else {}
+engine = create_async_engine(DATABASE_URL, echo=False, connect_args=_connect_args)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 
